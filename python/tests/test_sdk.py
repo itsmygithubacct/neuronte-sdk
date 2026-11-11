@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import ctypes
+import os
+from pathlib import Path
+import tempfile
+from unittest.mock import patch
 import unittest
 
 import neuronte_sdk as nsdk
@@ -37,6 +41,38 @@ class ApiTests(unittest.TestCase):
         self.assertNotEqual(caught.exception.code, nsdk.NEURONTE_OK)
 
 
+class DiscoveryTests(unittest.TestCase):
+    def test_precedence_fallback_and_invalid_preferred(self) -> None:
+        root = os.environ.get("NEURONTE_HOME", "")
+        assets = Path(root) / "weights"
+        old = assets / "neuronte-split-v4.nrt"
+        single = assets / "neuronte-ascii-v0.nrt"
+        if not old.is_file() or not single.is_file():
+            self.skipTest("set NEURONTE_HOME to a checkout with v4 and ASCII assets")
+        with tempfile.TemporaryDirectory() as temp:
+            weights = Path(temp) / "weights"
+            weights.mkdir()
+            preferred = weights / "neuronte-split-v5.nrt"
+            fallback = weights / "neuronte-split-v4.nrt"
+            preferred.symlink_to(single.resolve())
+            fallback.symlink_to(old.resolve())
+            with patch.dict(os.environ, NEURONTE_HOME=temp,
+                            NEURONTE_DIR="", NEURONTE_WEIGHTS=""):
+                with nsdk.open() as face:
+                    self.assertEqual(face.nets(), 1)
+                with nsdk.open(str(fallback)) as face:
+                    self.assertEqual(face.nets(), 6)
+                with patch.dict(os.environ, NEURONTE_WEIGHTS=str(fallback)):
+                    with nsdk.open() as face:
+                        self.assertEqual(face.nets(), 6)
+                preferred.unlink()
+                with nsdk.open() as face:
+                    self.assertEqual(face.nets(), 6)
+                preferred.write_bytes(b"invalid preferred bundle")
+                with self.assertRaises(nsdk.NeuronteError):
+                    nsdk.open()
+
+
 class FaceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -53,7 +89,7 @@ class FaceTests(unittest.TestCase):
         if face is not None:
             face.close()
 
-    def test_split_v4_routes(self) -> None:
+    def test_terminal_bundle_routes(self) -> None:
         face = self.face
         self.assertEqual(face.nets(), 6)
         rows = (

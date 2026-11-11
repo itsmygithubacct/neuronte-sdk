@@ -8,7 +8,7 @@ buffer as RGB888 bytes for `kitty_frame_presenter.FramePresenter`.
 
 It does not open a window, take a terminal, read the keyboard, or talk to
 a model. It does not include weight files. The default face is
-`neuronte-split-v4.nrt`. The default cell is 8 by 16, the Kilix cell.
+`neuronte-split-v5.nrt` when available, with split-v4 as a fallback. The default cell is 8 by 16, the Kilix cell.
 
 ## Build and test
 
@@ -34,12 +34,15 @@ library or the weight file is absent.
 exists:
 
 1. `NEURONTE_WEIGHTS`, when it is set
-2. `$NEURONTE_HOME/weights/neuronte-split-v4.nrt`
-3. `$NEURONTE_DIR/weights/neuronte-split-v4.nrt`
+2. `$NEURONTE_HOME/weights/neuronte-split-v5.nrt`, then split-v4 in that directory
+3. `$NEURONTE_DIR/weights/neuronte-split-v5.nrt`, then split-v4 in that directory
 4. The fallback recorded when this SDK was built
 
 `NEURONTE_WEIGHTS`, when set, is the only weight path tried. The library
-search is the same shape:
+search is the same shape. An existing but invalid preferred bundle fails to
+open; it does not silently select an older bundle.
+
+Library search:
 
 1. `NEURONTE_LIB`, when it is set
 2. `$NEURONTE_HOME/build/libneuronte.so`

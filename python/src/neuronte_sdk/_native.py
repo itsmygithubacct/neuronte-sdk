@@ -20,7 +20,7 @@ _MESSAGES = {
     NEURONTE_ERR_SHAPE: "weight file is for a different net shape",
     NEURONTE_ERR_NOMEM: "out of memory",
     NEURONTE_ERR_IO: (
-        "could not open libneuronte or neuronte-split-v4.nrt; "
+        "could not open libneuronte or terminal bundle (split-v5/v4); "
         "set NEURONTE_LIB and NEURONTE_WEIGHTS, or NEURONTE_HOME or NEURONTE_DIR"
     ),
 }

@@ -18,7 +18,8 @@ import sys
 from pathlib import Path
 
 LIB_REL = Path("build") / "libneuronte.so"
-WEIGHT_REL = Path("weights") / "neuronte-split-v4.nrt"
+WEIGHT_RELS = tuple(Path("weights") / f"neuronte-split-v{version}.nrt"
+                    for version in (5, 4))
 
 
 def c_string(value: str) -> str:
@@ -38,10 +39,11 @@ def c_string(value: str) -> str:
 
 def pair_from_root(root: Path) -> tuple[str, str]:
     library = root / LIB_REL
-    weights = root / WEIGHT_REL
+    weights = next((root / rel for rel in WEIGHT_RELS
+                    if (root / rel).is_file()), None)
     return (
         str(library) if library.is_file() else "",
-        str(weights) if weights.is_file() else "",
+        str(weights) if weights is not None else "",
     )
 
 

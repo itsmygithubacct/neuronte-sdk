@@ -11,7 +11,7 @@
  *
  * This library does not open a window, take a terminal, read the keyboard,
  * or talk to a model. It does not ship weights. nsdk_open(NULL) searches
- * for neuronte-split-v4.nrt and libneuronte.so.
+ * for neuronte-split-v5.nrt (falling back to v4) and libneuronte.so.
  *
  * Status codes are Neuronte's. Include this header or neuronte.h, not both:
  * both repeat the same enumeration.

@@ -151,6 +151,20 @@ static int open_library(void **library)
     return NEURONTE_ERR_IO;
 }
 
+/* Prefer the RC9 bundle within each root; preserve root precedence. */
+static int weights_from_root(const char *root, char *out, size_t out_len)
+{
+    static const char *names[] = {
+        "weights/neuronte-split-v5.nrt", "weights/neuronte-split-v4.nrt"
+    };
+    if (!root || !root[0])
+        return 0;
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; ++i)
+        if (join_path(out, out_len, root, names[i]) && file_readable(out))
+            return 1;
+    return 0;
+}
+
 /* A caller-supplied path and NEURONTE_WEIGHTS are authoritative. Otherwise
  * the same roots as the library, then the build-time fallback. */
 static int resolve_weights(const char *requested, char *out, size_t out_len)
@@ -167,15 +181,11 @@ static int resolve_weights(const char *requested, char *out, size_t out_len)
         return copy_path(out, out_len, forced);
 
     home = getenv("NEURONTE_HOME");
-    if (home && home[0] &&
-        join_path(out, out_len, home, "weights/neuronte-split-v4.nrt") &&
-        file_readable(out))
+    if (weights_from_root(home, out, out_len))
         return NEURONTE_OK;
 
     dir = getenv("NEURONTE_DIR");
-    if (dir && dir[0] &&
-        join_path(out, out_len, dir, "weights/neuronte-split-v4.nrt") &&
-        file_readable(out))
+    if (weights_from_root(dir, out, out_len))
         return NEURONTE_OK;
 
     if (NSDK_DEFAULT_WEIGHTS[0] &&

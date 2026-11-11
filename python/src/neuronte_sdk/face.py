@@ -253,7 +253,7 @@ class Face:
 
 
 def open(weights: str | None = None) -> Face:
-    """Open a weight file. None selects neuronte-split-v4.nrt."""
+    """Open a weight file. None prefers split-v5, falling back to split-v4."""
     if weights is not None and not isinstance(weights, str):
         raise TypeError("weights must be a str or None")
     if weights is not None and weights == "":
