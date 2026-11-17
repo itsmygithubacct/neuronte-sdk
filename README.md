@@ -77,6 +77,42 @@ The router's gate is not a draw net and is not reported.
 scalar, with no wrap and no wide-character doubling. Coverage blends the
 caller's RGB. Binary cut stays off unless `nsdk_set_binary(face, 1)`.
 
+## Canvas
+
+`neuronte_sdk_canvas.h` is a pixel canvas for a program that draws with
+Neuronte. It holds what such a program still does in plain code: make and
+free the buffer, set a clip, clear the frame, fill a rectangle with one
+colour, and hand the pixels on as RGBA bytes or a PPM file. It draws no
+other shape.
+
+```c
+#include "neuronte_sdk_canvas.h"
+
+nsdk_canvas canvas;
+
+if (!nsdk_canvas_init(&canvas, 640, 400))
+    return 1;
+nsdk_canvas_clear(&canvas, 0x101820);
+nsdk_canvas_fill_rect(&canvas, 16.0f, 16.5f, 200.0f, 48.0f, 0x2a9d8f, 0.9f);
+/* canvas.px is 0xAARRGGBB with canvas.w as the stride: what
+ * nsdk_draw_scalar() and Neuronte's own draw calls take. */
+nsdk_canvas_write_ppm(&canvas, "frame.ppm");
+nsdk_canvas_free(&canvas);
+```
+
+The canvas needs no weight file and no libneuronte. `src/neuronte_sdk_canvas.c`
+includes nothing else of the SDK, so a program may compile that one file
+with `-lm` in place of linking the library. The header may be included
+beside `neuronte_sdk.h` or `neuronte.h`.
+
+The source is adapted from soft-raster, and gives the same bytes: the
+struct has `sr_canvas`'s fields in the same order, and each function keeps
+the arithmetic of the soft-raster function named in the header. A program
+with a raster build and a Neuronte build gets the same frame from both.
+`make test` checks hand-worked results and sums pinned from soft-raster
+0.5.0. `make canvas-reference SOFT_RASTER=/path/to/soft-raster` prints
+those sums again. The canvas is not in the Python binding.
+
 ## Python
 
 The package is `neuronte_sdk`, importable from `python/src` via
