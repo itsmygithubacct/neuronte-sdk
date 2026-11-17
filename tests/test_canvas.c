@@ -12,6 +12,7 @@
 #include <malloc.h>
 #endif
 #include <math.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -50,9 +51,13 @@ static const struct { const char *name; uint64_t sum; } pinned[] = {
     {"pack", 0xac0fb870e607bdefull},
     {"ppm", 0x7baade2909cc8e3cull},
 };
+/* Every row must be compared by some test before the run ends. */
+static bool visited[sizeof pinned / sizeof pinned[0]];
 #endif
 
 static int failures;
+/* Set when there was no memory for the buffer past 2^24. */
+static int past_range_skipped;
 
 static void expect(int ok, const char *what)
 {
@@ -114,6 +119,7 @@ static void pin(const char *name)
 
     for (i = 0; i < sizeof pinned / sizeof pinned[0]; i++) {
         if (strcmp(pinned[i].name, name) == 0) {
+            visited[i] = true;
             if (pinned[i].sum != running) {
                 fprintf(stderr, "%s: sum %016llx, pinned %016llx\n", name,
                         (unsigned long long)running, (unsigned long long)pinned[i].sum);
@@ -219,9 +225,77 @@ static void test_buffer(void)
     nsdk_canvas_free(NULL);
     nsdk_canvas_wrap(NULL, mem, 4, 3);
     pin("buffer");
+
+    /* The pixel count may reach INT_MAX and go no further. Wrap reads no
+     * pixel, so these need no memory. 32768 x 65535 is 2^31 - 32768;
+     * 32768 x 65536 is 2^31; 46341 x 46341 is 2^31 + 4633. */
+    nsdk_canvas_wrap(&c, mem, INT_MAX, 1);
+    expect(c.px == mem && c.w == INT_MAX && c.h == 1 && c.clip_x1 == INT_MAX && c.clip_y1 == 1,
+           "INT_MAX pixels in a row are taken");
+    nsdk_canvas_wrap(&c, mem, 1, INT_MAX);
+    expect(c.px == mem && c.w == 1 && c.h == INT_MAX, "INT_MAX pixels in a column are taken");
+    nsdk_canvas_wrap(&c, mem, 32768, 65535);
+    expect(c.px == mem && c.w == 32768 && c.h == 65535, "2^31 - 32768 pixels are taken");
+    nsdk_canvas_wrap(&c, mem, 32768, 65536);
+    expect(c.px == NULL && c.w == 0 && c.h == 0, "2^31 pixels are refused");
+    nsdk_canvas_wrap(&c, mem, 46341, 46341);
+    expect(c.px == NULL && c.w == 0 && c.h == 0, "46341 x 46341 is refused");
 }
 
-#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 33)
+/* A struct with a buffer and a size that is not one is not drawn to. */
+static void test_a_bad_size_is_not_drawn_to(void)
+{
+    static const int sizes[][2] = {{0, 4}, {4, 0}, {-4, 4}, {4, -1}, {0, 0}};
+    uint32_t mem[16];
+    uint8_t bytes[64];
+    size_t i;
+    size_t at;
+
+    for (i = 0; i <= sizeof sizes / sizeof sizes[0]; i++) {
+        nsdk_canvas c;
+        int changed = 0;
+
+        memset(&c, 0, sizeof c);
+        if (i < sizeof sizes / sizeof sizes[0]) {
+            c.px = mem;
+            c.w = sizes[i][0];
+            c.h = sizes[i][1];
+        } else {
+            /* A good size and no buffer. */
+            c.w = 4;
+            c.h = 4;
+        }
+        c.clip_x1 = 4;
+        c.clip_y1 = 4;
+        for (at = 0; at < 16; at++) {
+            mem[at] = 0x11111111u;
+        }
+        memset(bytes, 0xee, sizeof bytes);
+        nsdk_canvas_clear(&c, 0xffffffu);
+        nsdk_canvas_fill_rect(&c, 0.0f, 0.0f, 4.0f, 4.0f, 0xffffffu, 1.0f);
+        expect(!nsdk_canvas_pack_rgba(&c, bytes, sizeof bytes), "a bad canvas is not packed");
+        for (at = 0; at < 16; at++) {
+            changed += mem[at] != 0x11111111u;
+        }
+        for (at = 0; at < sizeof bytes; at++) {
+            changed += bytes[at] != 0xee;
+        }
+        expect(changed == 0, "a bad canvas is not cleared, filled or packed");
+    }
+}
+
+/* The check below reads glibc's own count of what the program holds. A
+ * build with the address sanitizer has another allocator and its own leak
+ * report, and a libc without mallinfo2 has no count; both skip the check. */
+#if defined(__SANITIZE_ADDRESS__)
+#define UNDER_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define UNDER_ASAN 1
+#endif
+#endif
+
+#if defined(__GLIBC__) && __GLIBC_PREREQ(2, 33) && !defined(UNDER_ASAN)
 #define CAN_COUNT_MEMORY 1
 /* Bytes the allocator holds for the program, mapped blocks included. */
 static size_t held(void)
@@ -609,6 +683,17 @@ static void test_ppm(void)
     expect(!nsdk_canvas_write_ppm(&c, NULL) && errno == EINVAL, "no path is refused");
     errno = 0;
     expect(!nsdk_canvas_write_ppm(NULL, path) && errno == EINVAL, "no canvas is refused");
+    {
+        nsdk_canvas empty;
+        char never[220];
+
+        memset(&empty, 0, sizeof empty);
+        snprintf(never, sizeof never, "%s/never.ppm", dir);
+        errno = 0;
+        expect(!nsdk_canvas_write_ppm(&empty, never) && errno == EINVAL, "an empty canvas is refused");
+        expect(access(never, F_OK) != 0, "no file is made for an empty canvas");
+        unlink(never);
+    }
     unlink(path);
     rmdir(dir);
     nsdk_canvas_free(&c);
@@ -624,7 +709,9 @@ static void test_fill_past_float_range(void)
     int turn;
 
     if (mem == NULL) {
-        /* No room for a 64 MB buffer is not a fault of the canvas. */
+        /* No room for a 64 MB buffer is not a fault of the canvas, but the
+         * run must say that two sums went unchecked. */
+        past_range_skipped = 1;
         return;
     }
     for (turn = 0; turn < 2; turn++) {
@@ -664,6 +751,7 @@ static void test_fill_past_float_range(void)
 int main(void)
 {
     test_buffer();
+    test_a_bad_size_is_not_drawn_to();
     test_free_gives_the_buffer_back();
     test_clip();
     test_clear();
@@ -673,11 +761,33 @@ int main(void)
     test_pack();
     test_ppm();
 #ifdef NSDK_CANVAS_REFERENCE
-    return failures ? 1 : 0;
+    if (past_range_skipped) {
+        fprintf(stderr, "canvas-reference: no memory for the buffer past 2^24; the table is short\n");
+    }
+    return failures || past_range_skipped ? 1 : 0;
 #else
-    if (failures) {
-        fprintf(stderr, "test-canvas: %d failed\n", failures);
-        return 1;
+    {
+        size_t i;
+        int unchecked = 0;
+
+        for (i = 0; i < sizeof pinned / sizeof pinned[0]; i++) {
+            if (!visited[i]) {
+                unchecked++;
+                if (!past_range_skipped || strstr(pinned[i].name, "past 2^24") == NULL) {
+                    fprintf(stderr, "%s: pinned and never checked\n", pinned[i].name);
+                    expect(0, "every pinned sum is checked");
+                }
+            }
+        }
+        if (failures) {
+            fprintf(stderr, "test-canvas: %d failed\n", failures);
+            return 1;
+        }
+        if (unchecked) {
+            /* Not the plain "ok" line: a gate that wants every sum must see this. */
+            printf("test-canvas: ok, but %d sums past 2^24 were not checked: no memory for a 64 MB buffer\n", unchecked);
+            return 0;
+        }
     }
     printf("test-canvas: ok\n");
     return 0;

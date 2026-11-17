@@ -31,6 +31,13 @@
 extern "C" {
 #endif
 
+/* Present when the SDK has the canvas. Raised when a function is added. */
+#define NSDK_CANVAS_API 1
+
+/* Write the clip with nsdk_canvas_set_clip. The fill trusts the four clip
+ * fields and does not check them again: a clip stored by hand must lie
+ * inside the canvas, and a struct filled by hand has an empty clip, so
+ * fills draw nothing, until one is set. */
 typedef struct nsdk_canvas {
     uint32_t *px; /* row-major 0xAARRGGBB, px[y * w + x] */
     int w;
@@ -44,11 +51,14 @@ typedef struct nsdk_canvas {
 
 /* A zeroed w x h buffer with the whole canvas as the clip. False, and an
  * empty canvas, when a side is not positive, the pixel count passes
- * INT_MAX, or there is no memory. (sr_canvas_init) */
+ * INT_MAX, or there is no memory. What the struct held before is not
+ * read: free a canvas before it is made again, or its buffer is lost.
+ * (sr_canvas_init) */
 bool nsdk_canvas_init(nsdk_canvas *c, int w, int h);
 
 /* Use the caller's w x h pixels. The canvas does not own them. A null
- * buffer or a bad size leaves the canvas empty. (sr_canvas_wrap) */
+ * buffer or a bad size leaves the canvas empty. As with init, a buffer the
+ * struct owned before is not freed. (sr_canvas_wrap) */
 void nsdk_canvas_wrap(nsdk_canvas *c, uint32_t *mem, int w, int h);
 
 /* Free the buffer if nsdk_canvas_init made it, and empty the canvas. An
@@ -66,18 +76,23 @@ void nsdk_canvas_clear(nsdk_canvas *c, uint32_t rgb);
 
 /* Blend the colour 0xRRGGBB over the rectangle, inside the clip. A pixel
  * the rectangle partly covers takes that part of alpha, so an edge may lie
- * between pixels. Alpha above 1 is 1. A value that is not finite, a side
- * that is not positive and an alpha that is not above 0 draw nothing.
+ * between pixels. The strength at a pixel is alpha times the part of it
+ * covered, and counts as 1 when it is 1 or more: alpha 2 makes a
+ * half-covered edge pixel opaque, and an infinite alpha makes every
+ * touched pixel opaque. A position or size that is not finite, a side that
+ * is not positive, and an alpha that is NaN or not above 0 draw nothing.
  * (sr_fill_rect) */
 void nsdk_canvas_fill_rect(nsdk_canvas *c, float x, float y, float w, float h,
                            uint32_t rgb, float alpha);
 
-/* The pixels as bytes R, G, B, A. byte_count must be at least w * h * 4.
- * (sr_pack_rgba) */
+/* The pixels as bytes R, G, B, A. byte_count must be at least w * h * 4,
+ * and rgba must not overlap the pixels. (sr_pack_rgba) */
 bool nsdk_canvas_pack_rgba(const nsdk_canvas *c, uint8_t *rgba, size_t byte_count);
 
 /* A binary PPM, three bytes a pixel; alpha is not written. On failure
- * errno says why and a part file may be left. (sr_write_ppm) */
+ * errno says why and a part file may be left. On success errno is 0. An
+ * empty canvas is refused with EINVAL and no file is made.
+ * (sr_write_ppm) */
 bool nsdk_canvas_write_ppm(const nsdk_canvas *c, const char *path);
 
 #ifdef __cplusplus

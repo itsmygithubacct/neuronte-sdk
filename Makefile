@@ -78,6 +78,9 @@ install: all
 	$(INSTALL) -d $(DESTDIR)$(PREFIX)/include $(DESTDIR)$(PREFIX)/lib
 	$(INSTALL) -m 0644 include/neuronte_sdk.h include/neuronte_sdk_canvas.h $(DESTDIR)$(PREFIX)/include/
 	$(INSTALL) -m 0644 $(STATIC_LIB) $(SHARED_LIB) $(DESTDIR)$(PREFIX)/lib/
+	# The libraries hold code adapted from soft-raster: its notice goes with them.
+	$(INSTALL) -d $(DESTDIR)$(PREFIX)/share/doc/neuronte-sdk
+	$(INSTALL) -m 0644 LICENSE THIRD-PARTY.md $(DESTDIR)$(PREFIX)/share/doc/neuronte-sdk/
 
 clean:
 	rm -rf $(BUILD_DIR) grid.ppm

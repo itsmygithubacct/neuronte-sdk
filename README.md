@@ -103,7 +103,8 @@ nsdk_canvas_free(&canvas);
 The canvas needs no weight file and no libneuronte. `src/neuronte_sdk_canvas.c`
 includes nothing else of the SDK, so a program may compile that one file
 with `-lm` in place of linking the library. The header may be included
-beside `neuronte_sdk.h` or `neuronte.h`.
+beside `neuronte_sdk.h` or `neuronte.h`. It defines `NSDK_CANVAS_API`, so
+a program can tell an SDK that has the canvas from one that has not.
 
 The source is adapted from soft-raster, and gives the same bytes: the
 struct has `sr_canvas`'s fields in the same order, and each function keeps
