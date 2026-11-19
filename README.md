@@ -100,3 +100,12 @@ file's router: space, `A`, and `#` are `ascii`; U+2500 and the other light
 box and shade scalars covered by the draw net are `draw`; U+2192 is
 `symbol`; U+00E9 is `accent`; U+2588 and U+2580 are `pixel`; U+2800 is
 `braille`.
+
+## Embedded cell masks
+
+Programs that link Neuronte directly can compile `src/neuronte_sdk_mask.c`
+with the SDK and Neuronte include directories. `nsdk_cell_mask()` accepts
+the caller's Neuronte handle, style flags, and scratch buffers. It renders
+8-bit coverage for one or two terminal cells, so the caller can cache the
+mask and composite its own foreground and background colors. This source
+uses the caller's linked Neuronte library and requires no dynamic loader.
