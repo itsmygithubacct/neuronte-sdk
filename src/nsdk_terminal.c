@@ -129,16 +129,60 @@ static int claims_every_scalar(const struct range_rec *ranges, uint32_t n)
     return 1;
 }
 
-/* Read a version-2 bundle's range table. 0 on a usable table, -1 otherwise.
- * *claims is 1 when the table is missing or covers the probe scalars. */
+/* Read a version-2 bundle's range table from memory. 0 on a parsed table,
+ * -1 otherwise. *claims is 1 when the table is missing or covers the probe
+ * scalars. A parsed-but-claiming table still returns 0 so the caller can
+ * tell a short buffer from a real file. */
+static int parse_ranges(const unsigned char *buf, size_t len, struct range_rec **out,
+                        uint32_t *n_out, int *claims)
+{
+    uint32_t k, nr, i;
+    size_t need;
+    struct range_rec *ranges = NULL;
+
+    *out = NULL;
+    *n_out = 0;
+    *claims = 1;
+    if (buf == NULL || len < BUNDLE_HEAD || memcmp(buf, "NEURONTE", 8) != 0 || rd32(buf + 8) != 2)
+        return -1;
+    k = rd32(buf + 12);
+    nr = rd32(buf + 16);
+    if (k < 1 || k > MAX_NETS || nr > MAX_RANGES)
+        return -1;
+    need = BUNDLE_HEAD + 4u * (size_t)k + 12u * (size_t)nr;
+    if (len < need)
+        return -1;
+    if (nr > 0) {
+        ranges = calloc(nr, sizeof *ranges);
+        if (ranges == NULL)
+            return -1;
+    }
+    for (i = 0; i < nr; i++) {
+        size_t off = BUNDLE_HEAD + 4u * (size_t)k + 12u * (size_t)i;
+        struct range_rec *r = &ranges[i];
+        uint32_t net = rd32(buf + off + 8);
+        r->first = rd32(buf + off);
+        r->last = rd32(buf + off + 4);
+        if (r->first > r->last || r->last > 0x1FFFFFu || net >= k ||
+            (i > 0 && r->first <= ranges[i - 1].last)) {
+            free(ranges);
+            return -1;
+        }
+    }
+    *claims = claims_every_scalar(ranges, nr);
+    *out = ranges;
+    *n_out = nr;
+    return 0;
+}
+
 static int load_ranges(const char *path, struct range_rec **out, uint32_t *n_out, int *claims)
 {
     FILE *f;
     unsigned char head[BUNDLE_HEAD];
-    unsigned char *buf = NULL;
-    uint32_t k, nr, i;
+    unsigned char *buf;
+    uint32_t k, nr;
     size_t need, got;
-    struct range_rec *ranges = NULL;
+    int rc;
 
     *out = NULL;
     *n_out = 0;
@@ -170,30 +214,9 @@ static int load_ranges(const char *path, struct range_rec **out, uint32_t *n_out
         free(buf);
         return -1;
     }
-    if (nr > 0) {
-        ranges = calloc(nr, sizeof *ranges);
-        if (ranges == NULL) {
-            free(buf);
-            return -1;
-        }
-    }
-    for (i = 0; i < nr; i++) {
-        size_t off = BUNDLE_HEAD + 4u * (size_t)k + 12u * (size_t)i;
-        struct range_rec *r = &ranges[i];
-        r->first = rd32(buf + off);
-        r->last = rd32(buf + off + 4);
-        if (r->first > r->last || r->last > 0x1FFFFFu || rd32(buf + off + 8) >= k ||
-            (i > 0 && r->first <= ranges[i - 1].last)) {
-            free(ranges);
-            free(buf);
-            return -1;
-        }
-    }
+    rc = parse_ranges(buf, need, out, n_out, claims);
     free(buf);
-    *claims = claims_every_scalar(ranges, nr);
-    *out = ranges;
-    *n_out = nr;
-    return 0;
+    return rc;
 }
 
 static void drop_file(struct term_file *f)
@@ -335,6 +358,84 @@ static void consider(struct candidate *c, int *n, const char *base, const char *
         scan_dir(c, n, NSDK_TERMINAL_EXTRA_DIR, base, seen, &nseen);
 }
 
+static int classify(const char *name, int *role, long *version)
+{
+    long split, emoji;
+    if (name == NULL)
+        return 0;
+    split = numbered_version(name, "neuronte-split-v");
+    emoji = numbered_version(name, "neuronte-emoji-v");
+    if (split >= 0) {
+        *role = ROLE_SPLIT;
+        *version = split;
+        return 1;
+    }
+    if (emoji >= 0) {
+        *role = ROLE_EMOJI;
+        *version = emoji;
+        return 1;
+    }
+    if (strncmp(name, "neuronte-term-", 14) == 0 && has_suffix(name, ".nrt")) {
+        *role = ROLE_TERM;
+        *version = -1;
+        return 1;
+    }
+    return 0;
+}
+
+/* ranges is consumed. The first face is the base and is kept even when its
+ * table is missing. A later face with no usable table is not kept. */
+static int take_face(nsdk_terminal *t, const char *name, neuronte *face, int owned,
+                     struct range_rec *ranges, uint32_t nr, int parsed)
+{
+    int claims = 1;
+    int usable, known = 0, is_base;
+    int role = ROLE_BASE;
+    long version = -1;
+    struct term_file *slot;
+
+    if (t == NULL || face == NULL) {
+        free(ranges);
+        return NEURONTE_ERR_ARG;
+    }
+    if (parsed)
+        claims = claims_every_scalar(ranges, nr);
+    usable = parsed && !claims && nr > 0;
+    is_base = t->nfiles == 0;
+    if (name != NULL)
+        known = classify(name, &role, &version);
+    if (t->nfiles >= MAX_FILES || (!is_base && !known) || (!is_base && !usable)) {
+        free(ranges);
+        if (owned)
+            neuronte_close(face);
+        return 1;
+    }
+    if (!usable) {
+        free(ranges);
+        ranges = NULL;
+        nr = 0;
+    }
+#ifdef NSDK_HAVE_UNTRAINED
+    if (neuronte_set_untrained(face, 1) != NEURONTE_OK && is_base) {
+        free(ranges);
+        if (owned)
+            neuronte_close(face);
+        return NEURONTE_ERR_ARG;
+    }
+#endif
+    slot = &t->files[t->nfiles++];
+    memset(slot, 0, sizeof *slot);
+    snprintf(slot->name, NAME_LEN, "%s", (name != NULL && name[0] != '\0') ? name : "base");
+    slot->face = face;
+    slot->owned = owned;
+    slot->role = is_base ? ROLE_BASE : role;
+    slot->version = version;
+    slot->ranges = ranges;
+    slot->nranges = nr;
+    slot->table = usable ? 1 : 0;
+    return NEURONTE_OK;
+}
+
 static int open_supplement(struct nsdk_terminal *t, const struct candidate *c);
 
 static int better(const struct candidate *a, const struct candidate *b)
@@ -369,7 +470,6 @@ static void open_role(nsdk_terminal *t, struct candidate *c, int n, int role)
 
 static int open_supplement(struct nsdk_terminal *t, const struct candidate *c)
 {
-    struct term_file *f;
     struct range_rec *ranges = NULL;
     uint32_t nr = 0;
     int claims = 1;
@@ -384,20 +484,7 @@ static int open_supplement(struct nsdk_terminal *t, const struct candidate *c)
         free(ranges);
         return 0;
     }
-#ifdef NSDK_HAVE_UNTRAINED
-    neuronte_set_untrained(face, 1);
-#endif
-    f = &t->files[t->nfiles++];
-    memset(f, 0, sizeof *f);
-    snprintf(f->name, NAME_LEN, "%s", c->name);
-    f->face = face;
-    f->owned = 1;
-    f->role = c->role;
-    f->version = c->version;
-    f->ranges = ranges;
-    f->nranges = nr;
-    f->table = 1;
-    return 1;
+    return take_face(t, c->name, face, 1, ranges, nr, 1) == NEURONTE_OK;
 }
 
 static const struct term_file *scalar_file(const nsdk_terminal *t, uint32_t scalar)
@@ -431,88 +518,134 @@ static const struct term_file *half_file(const nsdk_terminal *t, uint32_t scalar
     return NULL;
 }
 
+static void reorder(nsdk_terminal *t)
+{
+    struct term_file ordered[MAX_FILES];
+    int n = 0, r, i;
+    if (t->nfiles < 1)
+        return;
+    ordered[n++] = t->files[0];
+    for (r = ROLE_SPLIT; r <= ROLE_EMOJI; r++)
+        for (i = 1; i < t->nfiles; i++)
+            if (t->files[i].role == r)
+                ordered[n++] = t->files[i];
+    memcpy(t->files, ordered, (size_t)n * sizeof ordered[0]);
+    t->nfiles = n;
+}
+
+int nsdk_terminal_create(nsdk_terminal **out)
+{
+    nsdk_terminal *t;
+    if (out == NULL)
+        return NEURONTE_ERR_ARG;
+    *out = NULL;
+    t = calloc(1, sizeof *t);
+    if (t == NULL)
+        return NEURONTE_ERR_NOMEM;
+    *out = t;
+    return NEURONTE_OK;
+}
+
+int nsdk_terminal_add(nsdk_terminal *t, neuronte *face, const char *name, const void *bytes,
+                      size_t len, int owned)
+{
+    struct range_rec *ranges = NULL;
+    uint32_t nr = 0;
+    int claims = 1;
+    int parsed = 0;
+    if (t == NULL || face == NULL)
+        return NEURONTE_ERR_ARG;
+    if (bytes != NULL && len > 0 &&
+        parse_ranges((const unsigned char *)bytes, len, &ranges, &nr, &claims) == 0)
+        parsed = 1;
+    if (!parsed) {
+        free(ranges);
+        ranges = NULL;
+        nr = 0;
+    }
+    return take_face(t, name, face, owned, ranges, nr, parsed);
+}
+
+int nsdk_terminal_add_path(nsdk_terminal *t, neuronte *face, const char *path, int owned)
+{
+    struct range_rec *ranges = NULL;
+    uint32_t nr = 0;
+    int claims = 1;
+    int parsed = 0;
+    if (t == NULL || face == NULL || path == NULL || path[0] == '\0')
+        return NEURONTE_ERR_ARG;
+    if (load_ranges(path, &ranges, &nr, &claims) == 0)
+        parsed = 1;
+    if (!parsed) {
+        free(ranges);
+        ranges = NULL;
+        nr = 0;
+    }
+    return take_face(t, base_name(path), face, owned, ranges, nr, parsed);
+}
+
+int nsdk_terminal_finish(nsdk_terminal *t)
+{
+    if (t == NULL || t->nfiles < 1)
+        return NEURONTE_ERR_ARG;
+    reorder(t);
+    return NEURONTE_OK;
+}
+
 int nsdk_terminal_open(neuronte *base, const char *base_path, nsdk_terminal **out)
 {
     nsdk_terminal *t;
     struct candidate *cands;
-    struct term_file *slot;
     char dir[PATH_LEN];
-    const char *name = "";
-    int nc = 0, i;
-    struct range_rec *ranges = NULL;
-    uint32_t nr = 0;
-    int claims = 1;
+    int nc = 0, rc;
 
     if (out == NULL)
         return NEURONTE_ERR_ARG;
     *out = NULL;
     if (base == NULL)
         return NEURONTE_ERR_ARG;
-#ifdef NSDK_HAVE_UNTRAINED
-    if (neuronte_set_untrained(base, 1) != NEURONTE_OK)
-        return NEURONTE_ERR_ARG;
-#endif
-    t = calloc(1, sizeof *t);
-    cands = calloc(MAX_CAND, sizeof *cands);
-    if (t == NULL || cands == NULL) {
-        free(t);
-        free(cands);
+    if (nsdk_terminal_create(&t) != NEURONTE_OK)
+        return NEURONTE_ERR_NOMEM;
+    cands = calloc((size_t)MAX_CAND, sizeof *cands);
+    if (cands == NULL) {
+        nsdk_terminal_close(t);
         return NEURONTE_ERR_NOMEM;
     }
     if (base_path != NULL && base_path[0] != '\0') {
         const char *slash = strrchr(base_path, '/');
-        name = base_name(base_path);
-        if (load_ranges(base_path, &ranges, &nr, &claims) != 0) {
-            free(ranges);
-            ranges = NULL;
-            nr = 0;
-            claims = 1;
+        rc = nsdk_terminal_add_path(t, base, base_path, 0);
+        if (rc != NEURONTE_OK) {
+            free(cands);
+            nsdk_terminal_close(t);
+            return rc;
         }
         if (slash != NULL && slash > base_path) {
             size_t len = (size_t)(slash - base_path);
             if (len < sizeof dir) {
                 memcpy(dir, base_path, len);
                 dir[len] = '\0';
-                consider(cands, &nc, name, dir);
+                consider(cands, &nc, base_name(base_path), dir);
             } else {
-                consider(cands, &nc, name, NULL);
+                consider(cands, &nc, base_name(base_path), NULL);
             }
         } else {
-            consider(cands, &nc, name, NULL);
+            consider(cands, &nc, base_name(base_path), NULL);
         }
     } else {
+        rc = nsdk_terminal_add(t, base, "base", NULL, 0, 0);
+        if (rc != NEURONTE_OK) {
+            free(cands);
+            nsdk_terminal_close(t);
+            return rc;
+        }
         consider(cands, &nc, NULL, NULL);
-    }
-    slot = &t->files[t->nfiles++];
-    snprintf(slot->name, NAME_LEN, "%s", name[0] ? name : "base");
-    slot->face = base;
-    slot->owned = 0;
-    slot->role = ROLE_BASE;
-    slot->ranges = claims ? NULL : ranges;
-    if (claims)
-        free(ranges);
-    else {
-        slot->nranges = nr;
-        slot->table = nr > 0;
     }
     /* Emoji and splits are few. Open them before term bundles so a long
      * term list cannot crowd the folder out of the cap. */
     open_role(t, cands, nc, ROLE_SPLIT);
     open_role(t, cands, nc, ROLE_EMOJI);
     open_role(t, cands, nc, ROLE_TERM);
-    /* Lookup walks the array from the base. Term bundles belong before
-     * emoji so a monochrome play triangle wins over the colour picture. */
-    {
-        struct term_file ordered[MAX_FILES];
-        int n = 0, r;
-        ordered[n++] = t->files[0];
-        for (r = ROLE_SPLIT; r <= ROLE_EMOJI; r++)
-            for (i = 1; i < t->nfiles; i++)
-                if (t->files[i].role == r)
-                    ordered[n++] = t->files[i];
-        memcpy(t->files, ordered, (size_t)n * sizeof ordered[0]);
-        t->nfiles = n;
-    }
+    reorder(t);
     free(cands);
     *out = t;
     return NEURONTE_OK;
@@ -533,6 +666,16 @@ int nsdk_terminal_trained(const nsdk_terminal *t, uint32_t scalar)
     if (half_file(t, scalar) != NULL || scalar_file(t, scalar) != NULL)
         return 1;
     return 0;
+}
+
+const char *nsdk_terminal_name(const nsdk_terminal *t, uint32_t scalar)
+{
+    const struct term_file *f = scalar_file(t, scalar);
+    if (f == NULL)
+        f = half_file(t, scalar);
+    if (f == NULL || !f->table)
+        return NULL;
+    return f->name;
 }
 
 int nsdk_terminal_draw(nsdk_terminal *t, uint32_t *pixels, int stride, int width, int height,
@@ -559,4 +702,65 @@ int nsdk_terminal_draw(nsdk_terminal *t, uint32_t *pixels, int stride, int width
     face = f != NULL ? f->face : t->files[0].face;
     return neuronte_draw_scalar_styled(face, pixels, stride, width, height, x, y, cell_w, cell_h,
                                        scalar, color, style);
+}
+
+static uint8_t coverage_byte(float coverage)
+{
+    float scaled;
+    if (coverage <= 0.f)
+        return 0;
+    if (coverage >= 1.f)
+        return 255;
+    scaled = coverage * 255.f + 0.5f;
+    if (scaled <= 0.f)
+        return 0;
+    if (scaled >= 255.f)
+        return 255;
+    return (uint8_t)scaled;
+}
+
+static void paint_coverage(uint8_t *dst, int dst_w, const float *src, int src_w, int h, int x0)
+{
+    int y, x;
+    for (y = 0; y < h; y++)
+        for (x = 0; x < src_w; x++)
+            dst[(size_t)y * (size_t)dst_w + (size_t)x0 + (size_t)x] =
+                coverage_byte(src[(size_t)y * (size_t)src_w + (size_t)x]);
+}
+
+int nsdk_terminal_mask(const nsdk_terminal *t, uint32_t scalar, unsigned style, int span,
+                       int cell_w, int cell_h, float *scratch, uint8_t *mask)
+{
+    const struct term_file *f;
+    int out_w, trained, draw_w, rc, left;
+    if (t == NULL || t->nfiles < 1 || scratch == NULL || mask == NULL || (span != 1 && span != 2) ||
+        cell_w < 1 || cell_w > 512 || cell_h < 1 || cell_h > 1024)
+        return NEURONTE_ERR_ARG;
+    out_w = span * cell_w;
+    if (span == 2) {
+        f = half_file(t, scalar);
+        if (f != NULL) {
+            rc = neuronte_coverage_half(f->face, scalar, 0, cell_w, cell_h, 0, scratch);
+            if (rc != NEURONTE_OK)
+                return rc;
+            paint_coverage(mask, out_w, scratch, cell_w, cell_h, 0);
+            rc = neuronte_coverage_half(f->face, scalar, 1, cell_w, cell_h, 0, scratch);
+            if (rc != NEURONTE_OK)
+                return rc;
+            paint_coverage(mask, out_w, scratch, cell_w, cell_h, cell_w);
+            return NEURONTE_OK;
+        }
+    }
+    f = scalar_file(t, scalar);
+    trained = f != NULL;
+    draw_w = trained ? cell_w : out_w;
+    rc = neuronte_coverage_styled(trained ? f->face : t->files[0].face, scalar, draw_w, cell_h, 0,
+                                  trained ? style : 0u, scratch);
+    if (rc != NEURONTE_OK)
+        return rc;
+    left = (out_w - draw_w) / 2;
+    if (out_w != draw_w)
+        memset(mask, 0, (size_t)out_w * (size_t)cell_h);
+    paint_coverage(mask, out_w, scratch, draw_w, cell_h, left);
+    return NEURONTE_OK;
 }

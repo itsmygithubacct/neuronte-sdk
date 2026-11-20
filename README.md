@@ -110,7 +110,9 @@ the caller's Neuronte handle, style flags, and scratch buffers. It renders
 mask and composite its own foreground and background colors. This source
 uses the caller's linked Neuronte library and requires no dynamic loader.
 
-`src/nsdk_terminal.c` is the same kind of compile-in file. `nsdk_terminal_open()`
+`src/nsdk_terminal.c` is part of `libneuronte-sdk`. Link that archive and
+then `libneuronte`. The shared object leaves the `neuronte_*` symbols
+undefined until the program links `libneuronte`. `nsdk_terminal_open()`
 keeps the caller's base handle for scalars that file was trained on, then
 opens newer `neuronte-split-vN` files, `neuronte-term-*` bundles, and
 `neuronte-emoji-vN` from the base file's directory, `NEUROTERM_WEIGHTS`,
@@ -118,11 +120,26 @@ opens newer `neuronte-split-vN` files, `neuronte-term-*` bundles, and
 directory, and `/usr/share/neuronte/weights`. A glyph comes from the first
 loaded range table that contains it. A two-cell emoji is drawn as two
 halves when the table contains the scalar and `0x110000` plus that scalar.
-`scripts/discover_terminal_weights.py` prints an extra weights directory
-for the build machine. Pass it as `-DNSDK_TERMINAL_EXTRA_DIR='"..."'`.
+
+Embedded weights never touch the filesystem. `nsdk_terminal_create`,
+`nsdk_terminal_add` (a face, its name, and the weight bytes), and
+`nsdk_terminal_finish` build the same set. `nsdk_terminal_add_path` reads
+the range table from a file the caller has already opened.
+`nsdk_terminal_mask` writes an 8-bit mask: a half pair is the left cell
+then the right cell, and any other glyph keeps the centred one-cell mask.
+`nsdk_cell_mask` stays a separate compile-in source for a caller that
+already holds one face, such as Metric Sans.
+
+The Makefile compiles the opener against `NEURONTE_INCLUDE` (default
+`$(NEURONTE)/include`). When that header declares `neuronte_set_untrained`,
+the build defines `NSDK_HAVE_UNTRAINED`, so a scalar outside every table
+draws the hollow mark. Pass an extra weights directory as
+`NSDK_TERMINAL_EXTRA_DIR=/path`, or as
+`NSDK_EXTRA_CPPFLAGS=-DNSDK_TERMINAL_EXTRA_DIR='"/path"'`. Do not put those
+flags in `CPPFLAGS`: the makefile appends `-Iinclude` to `CPPFLAGS`, and a
+command-line `CPPFLAGS=` replaces the rest. `scripts/discover_terminal_weights.py`
+prints an extra weights directory for the build machine.
 `scripts/discover_neuronte_src.py` prints a checkout of `origin/main` when
 the default Neuronte tree is older than `neuronte_set_untrained`. Neither
-script writes a machine path into committed source.
-Define `-DNSDK_HAVE_UNTRAINED` when the linked Neuronte has
-`neuronte_set_untrained`, so a scalar outside every table draws the hollow
-mark.
+script writes a machine path into committed source. The grid API still
+loads one weight file.
