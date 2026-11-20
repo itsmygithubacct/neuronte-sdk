@@ -109,3 +109,20 @@ the caller's Neuronte handle, style flags, and scratch buffers. It renders
 8-bit coverage for one or two terminal cells, so the caller can cache the
 mask and composite its own foreground and background colors. This source
 uses the caller's linked Neuronte library and requires no dynamic loader.
+
+`src/nsdk_terminal.c` is the same kind of compile-in file. `nsdk_terminal_open()`
+keeps the caller's base handle for scalars that file was trained on, then
+opens newer `neuronte-split-vN` files, `neuronte-term-*` bundles, and
+`neuronte-emoji-vN` from the base file's directory, `NEUROTERM_WEIGHTS`,
+`NEURONTE_WEIGHTS`, `$NEURONTE_HOME/weights`, the Kilix Neuronte weights
+directory, and `/usr/share/neuronte/weights`. A glyph comes from the first
+loaded range table that contains it. A two-cell emoji is drawn as two
+halves when the table contains the scalar and `0x110000` plus that scalar.
+`scripts/discover_terminal_weights.py` prints an extra weights directory
+for the build machine. Pass it as `-DNSDK_TERMINAL_EXTRA_DIR='"..."'`.
+`scripts/discover_neuronte_src.py` prints a checkout of `origin/main` when
+the default Neuronte tree is older than `neuronte_set_untrained`. Neither
+script writes a machine path into committed source.
+Define `-DNSDK_HAVE_UNTRAINED` when the linked Neuronte has
+`neuronte_set_untrained`, so a scalar outside every table draws the hollow
+mark.
