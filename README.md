@@ -139,7 +139,8 @@ draws the hollow mark. Pass an extra weights directory as
 flags in `CPPFLAGS`: the makefile appends `-Iinclude` to `CPPFLAGS`, and a
 command-line `CPPFLAGS=` replaces the rest. `scripts/discover_terminal_weights.py`
 prints an extra weights directory for the build machine.
-`scripts/discover_neuronte_src.py` prints a checkout of `origin/main` when
-the default Neuronte tree is older than `neuronte_set_untrained`. Neither
+`scripts/discover_neuronte_src.py` prints the closest checkout that
+contains `origin/main` and can build the tiled library, when the default
+Neuronte tree is older than `neuronte_set_untrained`. Neither
 script writes a machine path into committed source. The grid API still
 loads one weight file.
